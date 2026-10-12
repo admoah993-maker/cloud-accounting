@@ -87,3 +87,8 @@ def create_journal_entry(entry: JournalEntryModel):
         "entry_id": entry_data["id"],
         "total_amount": total_debit
     }
+if __name__ == "__main__":
+    import uvicorn
+    import os
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
