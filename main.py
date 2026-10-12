@@ -7,9 +7,9 @@ import os
 import uvicorn
 
 app = FastAPI(
-    title="نظام ERP المحاسبي السحابي الشامل - الإصدار النهائي",
-    description="إدارة الشجرة المحاسبية، الفروع، الموظفين وعمولاتهم، العملاء بالرقم الضريبي، المنتجات، والفوترة الإلكترونية مع الترحيل التلقائي.",
-    version="5.5.0"
+    title="نظام ERP المحاسبي السحابي - الشامل والتقارير",
+    description="إدارة الشجرة المحاسبية، الفواتير، المشتريات، تقارير الضريبة، وعمولات الموظفين والعملاء.",
+    version="6.0.0"
 )
 
 app.add_middleware(
@@ -37,7 +37,8 @@ accounts_db = [
     # الخصوم والالتزامات
     {"id": 2000, "name": "الخصوم المتداولة", "type": "خصوم"},
     {"id": 2010, "name": "ذمم الموردين (الدائنون)", "type": "خصوم"},
-    {"id": 2200, "name": "ضريبة القيمة المضافة المستحقة (15%)", "type": "خصوم"},
+    {"id": 2200, "name": "ضريبة القيمة المضافة المستحقة (مبيعات)", "type": "خصوم"},
+    {"id": 2210, "name": "ضريبة القيمة المضافة القابلة للاسترداد (مشتريات)", "type": "أصول متداولة"},
     {"id": 2300, "name": "رواتب وأجور مستحقة الدفع", "type": "خصوم"},
     {"id": 2500, "name": "الخصوم طويلة الأجل", "type": "خصوم"},
     {"id": 2510, "name": "القروض البنكية طويلة الأجل", "type": "خصوم"},
@@ -95,6 +96,7 @@ products_db = [
 ]
 
 invoices_db = []
+purchases_db = []
 journal_entries_db = []
 
 # النماذج (Pydantic Models)
@@ -142,10 +144,17 @@ class InvoiceCreateRequest(BaseModel):
     vat_rate: float = Field(default=15.0, ge=0)
     items: List[InvoiceLineItem]
 
-# Endpoints الأساسية والمرجعية
+class PurchaseCreateRequest(BaseModel):
+    supplier_name: str
+    product_id: int
+    quantity: int = Field(..., gt=0)
+    unit_cost: float = Field(..., gt=0)
+    vat_rate: float = Field(default=15.0, ge=0)
+
+# المسارات الأساسية والمرجعية
 @app.get("/")
 def root():
-    return {"status": "online", "message": "نظام ERP المحاسبي الشامل يعمل بكفاءة عالية!"}
+    return {"status": "online", "message": "نظام ERP المحاسبي الشامل مع التقارير والضرائب يعمل بكفاءة عالية!"}
 
 @app.get("/api/accounts")
 def get_accounts(): return accounts_db
@@ -193,7 +202,38 @@ def get_journals(): return journal_entries_db
 @app.get("/api/invoices")
 def get_invoices(): return invoices_db
 
-# محرك الفوترة والترحيل التلقائي
+@app.get("/api/purchases")
+def get_purchases(): return purchases_db
+
+# تسجيل مشتريات وضريبة مشتريات
+@app.post("/api/purchases")
+def create_purchase(req: PurchaseCreateRequest):
+    product = next((p for p in products_db if p["id"] == req.product_id), None)
+    if not product:
+        raise HTTPException(status_code=400, detail="المنتج غير موجود")
+    
+    subtotal = req.quantity * req.unit_cost
+    vat_amount = subtotal * (req.vat_rate / 100.0)
+    grand_total = subtotal + vat_amount
+
+    product["stock"] += req.quantity
+    product["cost"] = req.unit_cost
+
+    pur_id = len(purchases_db) + 1
+    purchase_record = {
+        "id": pur_id,
+        "supplier_name": req.supplier_name,
+        "product_name": product["name"],
+        "quantity": req.quantity,
+        "subtotal": subtotal,
+        "vat_amount": vat_amount,
+        "grand_total": grand_total,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    purchases_db.append(purchase_record)
+    return {"message": "تم تسجل المشتريات واحتساب الضريبة وتحديث المخزون بنجاح", "purchase": purchase_record}
+
+# محرك الفوترة والترحيل التلقائي للمبيعات
 @app.post("/api/invoices")
 def create_invoice(req: InvoiceCreateRequest):
     if not req.items:
@@ -217,7 +257,6 @@ def create_invoice(req: InvoiceCreateRequest):
         if product["stock"] < item.quantity:
             raise HTTPException(status_code=400, detail=f"الكمية غير كافية للمنتج {product['name']}. المتاح: {product['stock']}")
 
-        # خصم المخزون
         product["stock"] -= item.quantity
         line_price = product["price"] * item.quantity
         line_cost = product["cost"] * item.quantity
@@ -238,7 +277,6 @@ def create_invoice(req: InvoiceCreateRequest):
     grand_total = subtotal + vat_amount
     commission_earned = subtotal * (employee["commission_rate"] / 100.0)
 
-    # توجيه الحساب المدين حسب طريقة الدفع
     payment_map = {
         "cash": (1010, "الصندوق / النقدية"),
         "bank": (1020, "البنوك"),
@@ -246,7 +284,6 @@ def create_invoice(req: InvoiceCreateRequest):
     }
     debit_acc_id, debit_acc_name = payment_map.get(req.payment_method, (1010, "الصندوق"))
 
-    # 1. قيد المبيعات والضريبة
     inv_id = len(invoices_db) + 1
     sales_journal = {
         "id": len(journal_entries_db) + 1,
@@ -256,12 +293,11 @@ def create_invoice(req: InvoiceCreateRequest):
         "lines": [
             {"account_id": debit_acc_id, "account_name": debit_acc_name, "debit": grand_total, "credit": 0.0},
             {"account_id": 4010, "account_name": "إيرادات مبيعات المنتجات والخدمات", "debit": 0.0, "credit": subtotal},
-            {"account_id": 2200, "account_name": "ضريبة القيمة المضافة المستحقة (15%)", "debit": 0.0, "credit": vat_amount}
+            {"account_id": 2200, "account_name": "ضريبة القيمة المضافة المستحقة (مبيعات)", "debit": 0.0, "credit": vat_amount}
         ]
     }
     journal_entries_db.append(sales_journal)
 
-    # 2. قيد تكلفة البضاعة المباعة (COGS)
     cogs_journal = {
         "id": len(journal_entries_db) + 1,
         "ref": f"COGS-REF-{inv_id}",
@@ -274,7 +310,6 @@ def create_invoice(req: InvoiceCreateRequest):
     }
     journal_entries_db.append(cogs_journal)
 
-    # حفظ الفاتورة
     invoice_record = {
         "id": inv_id,
         "invoice_number": f"INV-{datetime.now().strftime('%Y%m%d')}-{inv_id:04d}",
@@ -287,6 +322,7 @@ def create_invoice(req: InvoiceCreateRequest):
         "subtotal": subtotal,
         "vat_amount": vat_amount,
         "grand_total": grand_total,
+        "total_cost": total_cost,
         "commission_earned": commission_earned,
         "sales_journal_id": sales_journal["id"],
         "cogs_journal_id": cogs_journal["id"]
@@ -295,8 +331,57 @@ def create_invoice(req: InvoiceCreateRequest):
 
     return {
         "status": "success",
-        "message": "تم إصدار الفاتورة الإلكترونية، وتحديث المخزون، وترحيل القيود المحاسبية بنجاح!",
+        "message": "تم إصدار الفاتورة وتحديث المخزون وترحيل القيود بنجاح!",
         "invoice": invoice_record
+    }
+
+# 📊 مسارات التقارير الضريبية، أداء الموظفين، وحسابات العملاء
+@app.get("/api/reports/summary")
+def get_financial_reports():
+    total_sales_subtotal = sum(i["subtotal"] for i in invoices_db)
+    total_sales_vat = sum(i["vat_amount"] for i in invoices_db)
+    total_cogs = sum(i["total_cost"] for i in invoices_db)
+    
+    total_purchase_vat = sum(p["vat_amount"] for p in purchases_db)
+    net_vat_due = total_sales_vat - total_purchase_vat
+    gross_profit = total_sales_subtotal - total_cogs
+
+    employee_performance = {}
+    for emp in employees_db:
+        emp_invoices = [i for i in invoices_db if i["employee"]["id"] == emp["id"]]
+        emp_sales = sum(i["subtotal"] for i in emp_invoices)
+        emp_commission = sum(i["commission_earned"] for i in emp_invoices)
+        employee_performance[emp["name"]] = {
+            "total_sales": emp_sales,
+            "invoices_count": len(emp_invoices),
+            "commission_earned": emp_commission,
+            "rate": emp["commission_rate"]
+        }
+
+    customer_statement = {}
+    for cust in customers_db:
+        cust_invoices = [i for i in invoices_db if i["customer"]["id"] == cust["id"]]
+        cust_total_purchases = sum(i["grand_total"] for i in cust_invoices)
+        customer_statement[cust["name"]] = {
+            "tax_number": cust["tax_number"],
+            "national_address": cust["national_address"],
+            "total_invoices": len(cust_invoices),
+            "total_spent": cust_total_purchases
+        }
+
+    return {
+        "vat_report": {
+            "output_vat_sales": total_sales_vat,
+            "input_vat_purchases": total_purchase_vat,
+            "net_vat_payable": net_vat_due
+        },
+        "profit_report": {
+            "total_sales": total_sales_subtotal,
+            "total_cost_cogs": total_cogs,
+            "gross_profit": gross_profit
+        },
+        "employees_report": employee_performance,
+        "customers_report": customer_statement
     }
 
 if __name__ == "__main__":
