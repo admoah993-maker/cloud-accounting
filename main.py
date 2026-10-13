@@ -8,8 +8,8 @@ import uvicorn
 
 app = FastAPI(
     title="نظام ERP المحاسبي السحابي - الشامل",
-    description="إدارة الشجرة المحاسبية، الصلاحيات، القيود اليومية، المبيعات، المشتريات، والتقارير الضريبية.",
-    version="7.0.0"
+    description="إدارة الشركات، الصلاحيات، القيود اليومية، المبيعات، المشتريات، والتقارير الضريبية.",
+    version="8.0.0"
 )
 
 app.add_middleware(
@@ -20,14 +20,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 1. قاعدة بيانات المستخدمين والصلاحيات
+# 1. إعدادات الشركة الافتراضية
+company_settings = {
+    "companyName": "شركة الحلول المترامية المحدودة",
+    "companyTax": "310123456700003",
+    "companyPhone": "+966500000000",
+    "companyAddress": "الرياض - المملكة العربية السعودية",
+    "vatEnabled": True,
+    "journalsEnabled": True,
+    "commissionsEnabled": True,
+    "vatRate": 15.0
+}
+
+# 2. قاعدة بيانات المستخدمين والصلاحيات
 users_db = [
     {"username": "admin", "password": "123", "name": "مدير النظام", "role": "admin"},
     {"username": "accountant", "password": "123", "name": "المحاسب الرئيسي", "role": "accountant"},
     {"username": "sales", "password": "123", "name": "عبدالله الشمري", "role": "sales"}
 ]
 
-# 2. الشجرة المحاسبية الكاملة
+# 3. الشجرة المحاسبية الكاملة
 accounts_db = [
     {"id": 1010, "name": "الصندوق / النقدية", "type": "أصول"},
     {"id": 1020, "name": "البنوك", "type": "أصول"},
@@ -72,10 +84,20 @@ invoices_db = []
 purchases_db = []
 journal_entries_db = []
 
-# نماذج الإدخال
+# نماذج البيانات (Pydantic Models)
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+class SettingsUpdateRequest(BaseModel):
+    companyName: str
+    companyTax: str
+    companyPhone: str
+    companyAddress: str
+    vatEnabled: bool
+    journalsEnabled: bool
+    commissionsEnabled: bool
+    vatRate: float
 
 class InvoiceLineItem(BaseModel):
     product_id: int
@@ -86,7 +108,6 @@ class InvoiceCreateRequest(BaseModel):
     employee_id: int
     branch_id: int
     payment_method: str
-    vat_rate: float = Field(default=15.0, ge=0)
     items: List[InvoiceLineItem]
 
 class PurchaseCreateRequest(BaseModel):
@@ -94,11 +115,10 @@ class PurchaseCreateRequest(BaseModel):
     product_id: int
     quantity: int = Field(..., gt=0)
     unit_cost: float = Field(..., gt=0)
-    vat_rate: float = Field(default=15.0, ge=0)
 
 @app.get("/")
 def root():
-    return {"status": "online", "message": "نظام ERP المحاسبي الشامل مع نظام الصلاحيات والقيود المزدوجة يعمل بنجاح!"}
+    return {"status": "online", "message": "نظام ERP المحاسبي الشامل يعمل بنجاح!"}
 
 @app.post("/api/login")
 def login(req: LoginRequest):
@@ -106,6 +126,16 @@ def login(req: LoginRequest):
     if not user:
         raise HTTPException(status_code=401, detail="اسم المستخدم أو كلمة المرور غير صحيحة")
     return {"message": "تم تسجيل الدخول بنجاح", "user": {"name": user["name"], "username": user["username"], "role": user["role"]}}
+
+@app.get("/api/settings")
+def get_settings():
+    return company_settings
+
+@app.post("/api/settings")
+def update_settings(req: SettingsUpdateRequest):
+    global company_settings
+    company_settings.update(req.dict())
+    return {"message": "تم تحديث إعدادات الشركة والميزات بنجاح", "settings": company_settings}
 
 @app.get("/api/accounts")
 def get_accounts(): return accounts_db
@@ -131,7 +161,7 @@ def get_invoices(): return invoices_db
 @app.get("/api/purchases")
 def get_purchases(): return purchases_db
 
-# تسجيل مشتريات وتوليد القيد المحاسبي
+# تسجيل مشتريات وتوليد القيود بحسب إعدادات النظام
 @app.post("/api/purchases")
 def create_purchase(req: PurchaseCreateRequest):
     product = next((p for p in products_db if p["id"] == req.product_id), None)
@@ -139,7 +169,8 @@ def create_purchase(req: PurchaseCreateRequest):
         raise HTTPException(status_code=400, detail="المنتج غير موجود")
     
     subtotal = req.quantity * req.unit_cost
-    vat_amount = subtotal * (req.vat_rate / 100.0)
+    current_vat_rate = company_settings["vatRate"] if company_settings["vatEnabled"] else 0.0
+    vat_amount = subtotal * (current_vat_rate / 100.0)
     grand_total = subtotal + vat_amount
 
     product["stock"] += req.quantity
@@ -158,22 +189,24 @@ def create_purchase(req: PurchaseCreateRequest):
     }
     purchases_db.append(purchase_record)
 
-    journal_entry = {
-        "id": len(journal_entries_db) + 1,
-        "ref": f"PUR-REF-{pur_id}",
-        "description": f"إثبات فاتورة مشتريات من المورد ({req.supplier_name})",
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "lines": [
-            {"account_id": 1200, "account_name": "مخزون البضائع", "debit": subtotal, "credit": 0.0},
-            {"account_id": 2210, "account_name": "ضريبة القيمة المضافة القابلة للاسترداد (مشتريات)", "debit": vat_amount, "credit": 0.0},
-            {"account_id": 1010, "account_name": "الصندوق / النقدية", "debit": 0.0, "credit": grand_total}
-        ]
-    }
-    journal_entries_db.append(journal_entry)
+    if company_settings["journalsEnabled"]:
+        lines = [{"account_id": 1200, "account_name": "مخزون البضائع", "debit": subtotal, "credit": 0.0}]
+        if company_settings["vatEnabled"] and vat_amount > 0:
+            lines.append({"account_id": 2210, "account_name": "ضريبة القيمة المضافة القابلة للاسترداد (مشتريات)", "debit": vat_amount, "credit": 0.0})
+        lines.append({"account_id": 1010, "account_name": "الصندوق / النقدية", "debit": 0.0, "credit": grand_total})
 
-    return {"message": "تم تسجل المشتريات وتوليد القيد المحاسبي وتحديث المخزون بنجاح", "purchase": purchase_record}
+        journal_entry = {
+            "id": len(journal_entries_db) + 1,
+            "ref": f"PUR-REF-{pur_id}",
+            "description": f"إثبات فاتورة مشتريات من المورد ({req.supplier_name})",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "lines": lines
+        }
+        journal_entries_db.append(journal_entry)
 
-# إصدار فاتورة مبيعات وتوليد القيود المحاسبية التلقائية
+    return {"message": "تم تسجيل المشتريات بنجاح", "purchase": purchase_record}
+
+# إصدار فاتورة مبيعات وتوليد القيود بحسب الإعدادات
 @app.post("/api/invoices")
 def create_invoice(req: InvoiceCreateRequest):
     customer = next((c for c in customers_db if c["id"] == req.customer_id), None)
@@ -207,36 +240,42 @@ def create_invoice(req: InvoiceCreateRequest):
             "net_total": line_price
         })
 
-    vat_amount = subtotal * (req.vat_rate / 100.0)
+    current_vat_rate = company_settings["vatRate"] if company_settings["vatEnabled"] else 0.0
+    vat_amount = subtotal * (current_vat_rate / 100.0)
     grand_total = subtotal + vat_amount
-    commission_earned = subtotal * (employee["commission_rate"] / 100.0)
+    
+    commission_earned = subtotal * (employee["commission_rate"] / 100.0) if company_settings["commissionsEnabled"] else 0.0
 
     inv_id = len(invoices_db) + 1
     
-    sales_journal = {
-        "id": len(journal_entries_db) + 1,
-        "ref": f"INV-REF-{inv_id}",
-        "description": f"إثبات فاتورة مبيعات رقم #{inv_id} للعميل ({customer['name']})",
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "lines": [
+    if company_settings["journalsEnabled"]:
+        sales_lines = [
             {"account_id": 1010, "account_name": "الصندوق / النقدية", "debit": grand_total, "credit": 0.0},
-            {"account_id": 4010, "account_name": "إيرادات مبيعات المنتجات والخدمات", "debit": 0.0, "credit": subtotal},
-            {"account_id": 2200, "account_name": "ضريبة القيمة المضافة المستحقة (مبيعات)", "debit": 0.0, "credit": vat_amount}
+            {"account_id": 4010, "account_name": "إيرادات مبيعات المنتجات والخدمات", "debit": 0.0, "credit": subtotal}
         ]
-    }
-    journal_entries_db.append(sales_journal)
+        if company_settings["vatEnabled"] and vat_amount > 0:
+            sales_lines.append({"account_id": 2200, "account_name": "ضريبة القيمة المضافة المستحقة (مبيعات)", "debit": 0.0, "credit": vat_amount})
 
-    cogs_journal = {
-        "id": len(journal_entries_db) + 1,
-        "ref": f"COGS-REF-{inv_id}",
-        "description": f"إثبات تكلفة البضاعة المباعة للفاتورة #{inv_id}",
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "lines": [
-            {"account_id": 5010, "account_name": "تكلفة البضاعة المباعة (COGS)", "debit": total_cost, "credit": 0.0},
-            {"account_id": 1200, "account_name": "مخزون البضائع", "debit": 0.0, "credit": total_cost}
-        ]
-    }
-    journal_entries_db.append(cogs_journal)
+        sales_journal = {
+            "id": len(journal_entries_db) + 1,
+            "ref": f"INV-REF-{inv_id}",
+            "description": f"إثبات فاتورة مبيعات رقم #{inv_id} للعميل ({customer['name']})",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "lines": sales_lines
+        }
+        journal_entries_db.append(sales_journal)
+
+        cogs_journal = {
+            "id": len(journal_entries_db) + 1,
+            "ref": f"COGS-REF-{inv_id}",
+            "description": f"إثبات تكلفة البضاعة المباعة للفاتورة #{inv_id}",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "lines": [
+                {"account_id": 5010, "account_name": "تكلفة البضاعة المباعة (COGS)", "debit": total_cost, "credit": 0.0},
+                {"account_id": 1200, "account_name": "مخزون البضائع", "debit": 0.0, "credit": total_cost}
+            ]
+        }
+        journal_entries_db.append(cogs_journal)
 
     invoice_record = {
         "id": inv_id,
@@ -245,7 +284,6 @@ def create_invoice(req: InvoiceCreateRequest):
         "customer": customer,
         "employee": employee,
         "branch": branch,
-        "payment_method": req.payment_method,
         "items": processed_items,
         "subtotal": subtotal,
         "vat_amount": vat_amount,
@@ -255,7 +293,7 @@ def create_invoice(req: InvoiceCreateRequest):
     }
     invoices_db.append(invoice_record)
 
-    return {"message": "تم إصدار الفاتورة وتوليد القيود المحاسبية بنجاح", "invoice": invoice_record}
+    return {"message": "تم إصدار الفاتورة وتوليد القيود بنجاح", "invoice": invoice_record}
 
 @app.get("/api/reports/summary")
 def get_financial_reports():
