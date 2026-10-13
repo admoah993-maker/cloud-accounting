@@ -158,7 +158,6 @@ def create_purchase(req: PurchaseCreateRequest):
     }
     purchases_db.append(purchase_record)
 
-    # قيد المشتريات والمخزون
     journal_entry = {
         "id": len(journal_entries_db) + 1,
         "ref": f"PUR-REF-{pur_id}",
@@ -214,7 +213,6 @@ def create_invoice(req: InvoiceCreateRequest):
 
     inv_id = len(invoices_db) + 1
     
-    # قيد المبيعات والضريبة
     sales_journal = {
         "id": len(journal_entries_db) + 1,
         "ref": f"INV-REF-{inv_id}",
@@ -228,7 +226,6 @@ def create_invoice(req: InvoiceCreateRequest):
     }
     journal_entries_db.append(sales_journal)
 
-    # قيد تكلفة البضاعة المباعة
     cogs_journal = {
         "id": len(journal_entries_db) + 1,
         "ref": f"COGS-REF-{inv_id}",
@@ -260,7 +257,6 @@ def create_invoice(req: InvoiceCreateRequest):
 
     return {"message": "تم إصدار الفاتورة وتوليد القيود المحاسبية بنجاح", "invoice": invoice_record}
 
-# التقارير الشاملة
 @app.get("/api/reports/summary")
 def get_financial_reports():
     total_sales_subtotal = sum(i["subtotal"] for i in invoices_db)
