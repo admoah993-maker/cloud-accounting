@@ -1,12 +1,10 @@
-from flask import Flask, render_template_string, request, jsonify
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
 import os
-import json
 
-app = Flask(__name__)
+app = FastAPI(title="نظام ERP المحاسبي السحابي")
 
-DB_FILE = "erp_database.json"
-
-# واجهة HTML والـ JavaScript المتكاملة داخل السيرفر
+# واجهة HTML والـ JavaScript المتكاملة للنظام
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -73,7 +71,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div class="flex items-center space-x-3 space-x-reverse">
                 <span class="text-2xl">⚡</span>
                 <div>
-                    <h1 id="headerCompanyName" class="text-lg font-bold">نظام ERP السحابي المطور</h1>
+                    <h1 id="headerCompanyName" class="text-lg font-bold">نظام ERP السحابي المطور (FastAPI)</h1>
                     <p id="headerCompanyDetails" class="text-xs text-indigo-300">إدارة الفواتير، العنوان الوطني، ومعرض القوالب</p>
                 </div>
             </div>
@@ -1166,12 +1164,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
-@app.route('/')
-def home():
-    """عرض النظام السحابي بشكل مباشر بدون الاعتماد على ملفات خارجية"""
-    return render_template_string(HTML_TEMPLATE)
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+    """عرض النظام المحاسبي السحابي عبر FastAPI"""
+    return HTML_TEMPLATE
 
-if __name__ == '__main__':
-    # دعم المنفذ الديناميكي لمنصات السحاب (مثل Render أو Heroku)
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
